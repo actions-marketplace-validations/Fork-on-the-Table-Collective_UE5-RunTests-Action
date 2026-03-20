@@ -14,5 +14,5 @@ outputs:
   summary:
     description: 'It will give back the summary report of all the tests'
 runs:
-  using: 'node20'
-  main: 'dist/index.js'
+  using: 'node24'
+  main: 'dist/main.js'

@@ -1,15 +1,28 @@
 {
   "name": "ue5-runtests",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "GitHub Action for running Unreal Engine 5 tests on self-hosted runners",
+  "main": "dist/main.js",
   "scripts": {
+    "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "unreal-engine",
+    "ue5",
+    "testing",
+    "github-action"
+  ],
+  "author": "Fork-on-the-Table-Collective",
   "license": "ISC",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "dependencies": {
     "@actions/core": "^1.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
   }
 }
