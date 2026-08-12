@@ -2,10 +2,11 @@
   "name": "ue5-runtests",
   "version": "1.0.0",
   "description": "GitHub Action for running Unreal Engine 5 tests on self-hosted runners",
-  "main": "dist/main.js",
+  "main": "dist/index.js",
   "scripts": {
     "build": "ncc build src/main.ts --license licenses.txt",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "keywords": [
     "unreal-engine",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@vercel/ncc": "^0.38.3",
+    "tsx": "^4.20.6",
     "typescript": "^5.0.0"
   }
 }

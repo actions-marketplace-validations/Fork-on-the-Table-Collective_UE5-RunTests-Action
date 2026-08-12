@@ -24741,99 +24741,240 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.main = exports.evaluateRun = exports.getChildTests = exports.readAutomationExitCode = exports.parseTestList = void 0;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
 const child_process_1 = __nccwpck_require__(5317);
-const readAndParseString = (testlistString) => {
-    const lines = [];
-    for (const line of testlistString.split("\n")) {
-        const values = line.split(",");
-        lines.push(values);
-    }
-    return lines;
-};
-function getAllTests(TestList) {
-    const AllTests = {};
-    readAndParseString(TestList).forEach((subTestList) => {
-        const mainTest = subTestList[0];
-        const subTest = subTestList.slice(0, 2).join(".");
-        const elementaryTest = subTestList.join(".");
-        if (!(mainTest in AllTests)) {
-            AllTests[mainTest] = {};
+const TEST_COMPLETE_PATTERN = /\*{4} TEST COMPLETE\. EXIT CODE: (-?\d+) \*{4}/g;
+const parseTestList = (testList) => {
+    var _a;
+    const allTests = {};
+    for (const rawLine of testList.split(/\r?\n/)) {
+        const values = rawLine
+            .split(",")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0);
+        if (values.length === 0) {
+            continue;
         }
-        subTest in AllTests[mainTest]
-            ? AllTests[mainTest][subTest].push(elementaryTest)
-            : (AllTests[mainTest][subTest] = [elementaryTest]);
-    });
-    return AllTests;
-}
-const command = (EnginePath, uprojectFile, test, currentPath) => {
-    return `"${EnginePath}\\Engine\\Binaries\\Win64\\UnrealEditor.exe" "${uprojectFile}" -ExecCmds="Automation RunTest ${test};quit" -TestExit="Automation Test Queue Empty" -log -nosplash -Unattended -nopause -NullRHI -ReportOutputPath="${currentPath}\\test_results"`;
-};
-const cleanString = (input) => {
-    let output = "";
-    for (let i = 0; i < input.length; i++) {
-        if (input.charCodeAt(i) <= 127) {
-            output += input.charAt(i);
+        const mainTest = values[0];
+        const subTest = values.slice(0, 2).join(".");
+        const elementaryTest = values.join(".");
+        allTests[mainTest] ?? (allTests[mainTest] = {});
+        (_a = allTests[mainTest])[subTest] ?? (_a[subTest] = []);
+        if (!allTests[mainTest][subTest].includes(elementaryTest)) {
+            allTests[mainTest][subTest].push(elementaryTest);
         }
     }
-    return output;
+    return allTests;
 };
-const loadJSON = (jsonFilePath) => {
+exports.parseTestList = parseTestList;
+const readAutomationExitCode = (logContents) => {
+    const matches = [...logContents.matchAll(TEST_COMPLETE_PATTERN)];
+    if (matches.length === 0) {
+        return null;
+    }
+    return Number.parseInt(matches[matches.length - 1][1], 10);
+};
+exports.readAutomationExitCode = readAutomationExitCode;
+const getChildTests = (test, subtests) => {
+    const childTests = subtests === ""
+        ? []
+        : Array.isArray(subtests)
+            ? subtests
+            : Object.keys(subtests);
+    return [...new Set(childTests)].filter((childTest) => childTest !== test);
+};
+exports.getChildTests = getChildTests;
+const evaluateRun = (report, automationExitCode, processExitCode, launchError, reportError) => {
+    const errors = [];
+    if (launchError) {
+        errors.push(`Unable to launch Unreal Editor: ${launchError.message}`);
+    }
+    if (!report) {
+        errors.push(reportError
+            ? `Unable to read automation report: ${reportError.message}`
+            : "Unreal did not produce a valid automation JSON report.");
+    }
+    else {
+        const total = report.succeeded
+            + report.succeededWithWarnings
+            + report.failed
+            + report.notRun
+            + report.inProcess;
+        if (total === 0) {
+            errors.push("The automation report contained no tests.");
+        }
+        if (report.failed > 0) {
+            errors.push(`${report.failed} test(s) failed.`);
+        }
+        if (report.notRun > 0) {
+            errors.push(`${report.notRun} test(s) were not run.`);
+        }
+        if (report.inProcess > 0) {
+            errors.push(`${report.inProcess} test(s) were still in process.`);
+        }
+    }
+    if (automationExitCode === null) {
+        errors.push("The Unreal log did not contain a TEST COMPLETE exit marker.");
+    }
+    else if (automationExitCode !== 0) {
+        errors.push(`Unreal automation completed with exit code ${automationExitCode}.`);
+    }
+    const succeeded = errors.length === 0;
+    const warning = succeeded && processExitCode !== null && processExitCode !== 0
+        ? `Unreal returned process exit code ${processExitCode} after its JSON report and automation exit marker indicated success.`
+        : undefined;
+    return { succeeded, errors, warning };
+};
+exports.evaluateRun = evaluateRun;
+const loadReport = (reportPath) => {
+    const data = fs.readFileSync(reportPath, "utf8").replace(/^\uFEFF/, "");
+    const report = JSON.parse(data);
+    const requiredCounts = [
+        "succeeded",
+        "succeededWithWarnings",
+        "failed",
+        "notRun",
+        "inProcess",
+    ];
+    for (const property of requiredCounts) {
+        if (typeof report[property] !== "number") {
+            throw new Error(`Automation report property '${property}' is missing or invalid.`);
+        }
+    }
+    if (!Array.isArray(report.tests)) {
+        throw new Error("Automation report property 'tests' is missing or invalid.");
+    }
+    return report;
+};
+const sanitizePathSegment = (value) => {
+    const sanitized = value.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^_+|_+$/g, "");
+    return sanitized || "tests";
+};
+const createEditorArguments = (uprojectFile, test, reportDirectory, unrealLogPath) => [
+    uprojectFile,
+    `-ExecCmds=Automation RunTests ${test}; Quit`,
+    "-TestExit=Automation Test Queue Empty",
+    "-log",
+    "-nosplash",
+    "-Unattended",
+    "-nopause",
+    "-NullRHI",
+    "-NoSound",
+    "-stdout",
+    "-FullStdOutLogOutput",
+    `-ReportExportPath=${reportDirectory}`,
+    `-AbsLog=${unrealLogPath}`,
+];
+const appendSummary = async (result) => {
+    const summary = result.summary;
+    await core.summary
+        .addHeading("Unreal automation tests")
+        .addTable([
+        [
+            { data: "Passed", header: true },
+            { data: "Warnings", header: true },
+            { data: "Failed", header: true },
+            { data: "Not run", header: true },
+            { data: "In process", header: true },
+        ],
+        [
+            summary.succeeded.toString(),
+            summary.succeededWithWarnings.toString(),
+            summary.failed.toString(),
+            summary.notRun.toString(),
+            summary.inProcess.toString(),
+        ],
+    ])
+        .write();
+};
+const addResultToSummary = (result, testResult) => {
+    result.summary.succeeded += testResult.succeeded;
+    result.summary.succeededWithWarnings += testResult.succeededWithWarnings;
+    result.summary.failed += testResult.failed;
+    result.summary.notRun += testResult.notRun;
+    result.summary.inProcess += testResult.inProcess;
+};
+const runTest = (editorPath, uprojectFile, outputRoot, test, subtests, result, runNumber) => {
+    runNumber.value += 1;
+    const runDirectory = path.join(outputRoot, `${runNumber.value.toString().padStart(3, "0")}-${sanitizePathSegment(test)}`);
+    const reportDirectory = path.join(runDirectory, "report");
+    const unrealLogPath = path.join(runDirectory, "Unreal.log");
+    const reportPath = path.join(reportDirectory, "index.json");
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+    fs.mkdirSync(reportDirectory, { recursive: true });
+    core.info(`Running test filter: ${test}`);
+    core.info(`Diagnostics directory: ${runDirectory}`);
+    const processResult = (0, child_process_1.spawnSync)(editorPath, createEditorArguments(uprojectFile, test, reportDirectory, unrealLogPath), { stdio: "inherit", windowsHide: true });
+    let report = null;
+    let reportError;
     try {
-        const data = fs.readFileSync(jsonFilePath, "utf8");
-        const obj = JSON.parse(cleanString(data));
-        return obj;
+        report = loadReport(reportPath);
     }
     catch (error) {
-        console.error("Error loading or parsing JSON:", error);
-        throw error;
+        reportError = error;
     }
-};
-const runTest = (EnginePath, uprojectFile, currentPath, test, Subtests, result) => {
-    console.log(`Running test: ${test}`);
-    const logfile = currentPath + "\\test_results\\index.json";
+    let automationExitCode = null;
     try {
-        const cmd = command(EnginePath, uprojectFile, test, currentPath);
-        (0, child_process_1.execSync)(cmd);
-        const obj = loadJSON(logfile);
-        result[test] = {
-            succeeded: obj.succeeded,
-            succeededWithWarnings: obj.succeededWithWarnings,
-            failed: obj.failed,
-            notRun: obj.notRun,
-            inProcess: obj.inProcess,
-            errors: JSON.stringify(obj.tests.filter((test) => test.state !== "Success"), null, 2),
-        };
-        result.summary.succeeded += result[test].succeeded;
-        result.summary.succeededWithWarnings += result[test].succeededWithWarnings;
-        result.summary.failed += result[test].failed;
-        result.summary.notRun += result[test].notRun;
-        result.summary.inProcess += result[test].inProcess;
+        automationExitCode = (0, exports.readAutomationExitCode)(fs.readFileSync(unrealLogPath, "utf8"));
     }
-    catch (error) {
-        result[test] = {
-            errors: `Error executing Test: ${test}. Message: ${error.message}`,
-        };
-        console.log(`Error executing Test: ${test}. Message: ${error.message}`);
-        if (Subtests === "") {
-            result.summary.failedTestset.push(test);
-        }
-        else {
-            const SubTestList = Array.isArray(Subtests)
-                ? Subtests
-                : Object.keys(Subtests);
-            SubTestList.forEach((SubTest) => {
-                runTest(EnginePath, uprojectFile, currentPath, SubTest, Array.isArray(Subtests) ? "" : Subtests[SubTest], result);
-            });
-        }
+    catch {
+        // The evaluation below reports the missing exit marker.
     }
+    const evaluation = (0, exports.evaluateRun)(report, automationExitCode, processResult.status, processResult.error, reportError);
+    if (evaluation.warning) {
+        core.warning(evaluation.warning);
+    }
+    if (evaluation.succeeded && report) {
+        const testResult = {
+            ...report,
+            automationExitCode,
+            processExitCode: processResult.status,
+            errors: [],
+            warning: evaluation.warning,
+        };
+        result[test] = testResult;
+        addResultToSummary(result, testResult);
+        return;
+    }
+    const childTests = (0, exports.getChildTests)(test, subtests);
+    if (childTests.length > 0) {
+        for (const childTest of childTests) {
+            const childSubtests = Array.isArray(subtests)
+                ? ""
+                : subtests === ""
+                    ? ""
+                    : subtests[childTest];
+            runTest(editorPath, uprojectFile, outputRoot, childTest, childSubtests, result, runNumber);
+        }
+        return;
+    }
+    const failedResult = {
+        succeeded: report?.succeeded ?? 0,
+        succeededWithWarnings: report?.succeededWithWarnings ?? 0,
+        failed: report?.failed ?? 0,
+        notRun: report?.notRun ?? 0,
+        inProcess: report?.inProcess ?? 0,
+        tests: report?.tests ?? [],
+        automationExitCode,
+        processExitCode: processResult.status,
+        errors: evaluation.errors,
+    };
+    result[test] = failedResult;
+    addResultToSummary(result, failedResult);
+    result.summary.failedTestset.push(test);
+    result.summary.errors.push(...evaluation.errors.map((error) => `${test}: ${error}`));
 };
-const main = () => {
-    const EnginePath = core.getInput("EnginePath");
-    const uprojectFile = core.getInput("uprojectFile");
-    const TestList = core.getInput("TestList");
-    const currentPath = process.cwd();
+const main = async () => {
+    const enginePath = core.getInput("EnginePath", { required: true });
+    const uprojectFile = core.getInput("uprojectFile", { required: true });
+    const testList = core.getInput("TestList", { required: true });
+    const editorPath = path.join(enginePath, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe");
+    const outputRoot = path.join(process.cwd(), "test_results");
+    const allTests = (0, exports.parseTestList)(testList);
+    const mainTests = Object.keys(allTests);
     const result = {
         summary: {
             succeeded: 0,
@@ -24846,30 +24987,37 @@ const main = () => {
         },
     };
     try {
-        const AllTests = getAllTests(TestList);
-        const MainTests = Object.keys(AllTests);
-        MainTests.forEach((MainTest) => {
-            const Subtests = AllTests[MainTest];
-            runTest(EnginePath, uprojectFile, currentPath, MainTest, Subtests, result);
-        });
-        if (result.summary.failed > 0 ||
-            result.summary.failedTestset.length > 0) {
-            core.setFailed(`Some tests failed. ${JSON.stringify(result, null, 2)}`);
+        if (!fs.existsSync(editorPath)) {
+            throw new Error(`Unreal command-line editor was not found at '${editorPath}'.`);
         }
-        else if (result.summary.failedTestset.length > 0) {
-            core.setFailed(`Some tests run into error. ${JSON.stringify(result, null, 2)}`);
+        if (!fs.existsSync(uprojectFile)) {
+            throw new Error(`Unreal project file was not found at '${uprojectFile}'.`);
         }
-        else {
-            console.log(JSON.stringify(result.summary, null, 2));
-            core.setOutput("summary", JSON.stringify(result.summary, null, 2));
+        if (mainTests.length === 0) {
+            throw new Error("TestList did not contain a test filter.");
         }
+        fs.rmSync(outputRoot, { recursive: true, force: true });
+        fs.mkdirSync(outputRoot, { recursive: true });
+        const runNumber = { value: 0 };
+        for (const mainTest of mainTests) {
+            runTest(editorPath, uprojectFile, outputRoot, mainTest, allTests[mainTest], result, runNumber);
+        }
+        await appendSummary(result);
+        if (result.summary.failedTestset.length > 0) {
+            core.setFailed(`Some test filters failed. ${JSON.stringify(result, null, 2)}`);
+            return;
+        }
+        core.setOutput("summary", JSON.stringify(result.summary, null, 2));
+        core.info(JSON.stringify(result.summary, null, 2));
     }
     catch (error) {
         core.setFailed(error.message);
     }
-    console.log("Job finished");
 };
-main();
+exports.main = main;
+if (require.main === require.cache[eval('__filename')]) {
+    void (0, exports.main)();
+}
 
 
 /***/ }),
