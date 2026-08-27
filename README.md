@@ -8,12 +8,14 @@ A GitHub Action for running Unreal Engine 5 tests on self-hosted runners with sp
 - Supports nested test structures with main tests and subtests
 - Generates comprehensive test result reports
 - Provides test execution summary
+- Streams Unreal output without a fixed in-memory buffer
+- Evaluates the exported JSON report and Unreal automation exit marker
 
 ## Usage
 
 ```yaml
 - name: Run UE5 Tests
-  uses: Fork-on-the-Table-Collective/UE5-RunTests@v1
+  uses: Fork-on-the-Table-Collective/UE5-RunTests-Action@v2
   with:
     EnginePath: 'C:\Program Files\Epic Games\UE_5.x'
     uprojectFile: 'C:\path\to\your\project.uproject'
@@ -51,10 +53,16 @@ A GitHub Action for running Unreal Engine 5 tests on self-hosted runners with sp
 ## How It Works
 
 1. Parses the test list into a hierarchical structure
-2. Executes each test using the Unreal Editor in batch mode
-3. Collects test results from the JSON output file
-4. Aggregates results and provides a comprehensive summary
-5. Fails the action if any tests failed or encountered errors
+2. Executes each test using `UnrealEditor-Cmd.exe` in batch mode
+3. Writes each run to a fresh directory under `test_results/`
+4. Collects results from `-ReportExportPath` and the Unreal log
+5. Requires a valid report and `TEST COMPLETE. EXIT CODE: 0`
+6. Aggregates results and provides a comprehensive summary
+7. Fails the action if tests fail, remain incomplete, do not run, or reports are invalid
+
+The JSON report and Unreal automation exit marker are authoritative. If both indicate success but
+the editor process returns a non-zero status during shutdown, the action emits a warning instead of
+reporting successful tests as failed.
 
 ## Test Results
 
@@ -65,6 +73,7 @@ The action generates test result reports that include:
 - Tests not run
 - Tests in process
 - Detailed error information for failed tests
+- Unreal automation and editor process exit information
 
 ## Requirements
 
